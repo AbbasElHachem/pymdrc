@@ -60,29 +60,29 @@ First divide the events into 4 different boxes:
 Second extract the P01 for every month and plot it
 '''
 import numpy as np
-from numpy.linalg import inv
+# from numpy.linalg import inv
 import pandas as pd
-import tarfile
+# import tarfile
 import os
 import timeit
-import datetime
-from datetime import timedelta
-from datetime import datetime
+# import datetime
+# from datetime import timedelta
+# from datetime import datetime
 import time
-import glob
-import pickle
+# import glob
+# import pickle
 import matplotlib.pyplot as plt
 
 
-from dateutil.relativedelta import relativedelta
-from scipy.stats import norm
-import calendar
-from pandas.tseries.frequencies import to_offset
+# from dateutil.relativedelta import relativedelta
+# from scipy.stats import norm
+# import calendar
+# from pandas.tseries.frequencies import to_offset
 from scipy.stats import beta
 from scipy.special import gamma as gammaf
 from scipy.optimize import minimize
-from sklearn import linear_model
-import math
+# from sklearn import linear_model
+# import math
 
 main_dir = os.path.join(
     r'X:\staff\elhachem\ClimXtreme\04_analysis\08_cascade_model')
@@ -100,8 +100,7 @@ START = timeit.default_timer()  # to get the runtime of the program
 # =============================================================================
 #  data process
 # =============================================================================
-# %%
-'''從這邊就可以寫成function了'''
+
 # divided by 10
 StationData_row = pd.read_csv(StationPath, sep=';', header=None, names=[
                               'value'], index_col=0) / 10
