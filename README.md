@@ -1,6 +1,7 @@
 # pymdrc
 Multiplicative Discrete Random Cascade Model (MDRC)
 
+https://www.researchgate.net/publication/332151752_Application_of_a_Cascade_Model_for_Temporal_Rainfall_Disaggregation
 
 First read rainfall data on a fine resolution (1hour) and aggregate the data
 to higher time frequencies:
