@@ -91,6 +91,13 @@ class CascadeModel():
 
         return self.temp_agg
 
+    def sum_check(self, df1, df2):
+        if abs(df1.value.sum() - df2.value.sum()) <= 10**-4:
+            pass
+        else:
+            print('error')
+        return
+
     def resampleDf(self, df, agg,
                    closed='right', label='right',
                    shift=False, leave_nan=True,
@@ -204,8 +211,10 @@ class CascadeModel():
                                  loffset=label_shift).sum()
         if shift == True:
             df = df_copy
+
+        self.sum_check(df_agg, df)
+
         return df_agg
-    pass
 
 
 if __name__ == '__main__':

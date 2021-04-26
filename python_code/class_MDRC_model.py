@@ -113,6 +113,9 @@ StationData_row.index = pd.to_datetime(
 
 # try to let the value bigger than 10 times divided by 10 again
 StationData_row[StationData_row.value > 10] = np.nan
+
+
+threshold = 0.3
 # =============================================================================
 #  Casade - W value and P01
 # =============================================================================
@@ -134,6 +137,8 @@ S_15min = grouppe(StationData_row, '15T')
 
 # the length sould be two times larger
 
+#
+
 
 def fulfill_er(df_oben, df_unten, timestep_unten):
 
@@ -150,19 +155,21 @@ def fulfill_er(df_oben, df_unten, timestep_unten):
                pd.offsets.Minute(timestep_unten), 'value'] = df_oben.value[1] - df.value[0]
         df = df.sort_index()
 
-        #second and one
-        for i in range(0, 2):
-            df.loc[df.index[0] -
-                   pd.offsets.Minute(timestep_unten), 'value'] = df_oben.value[0] / 2
-            df = df.sort_index()
+    #second and one
+    for i in range(0, 2):
+        df.loc[df.index[0] -
+               pd.offsets.Minute(timestep_unten), 'value'] = df_oben.value[0] / 2
+        df = df.sort_index()
     else:
         pass
 
     return df
 
 
-S_30min = fulfill_er(S_60min, S_30min, 30)
-S_15min = fulfill_er(S_30min, S_15min, 15)
+#
+#
+# S_30min2 = fulfill_er(S_60min, S_30min, 30)
+# S_15min2 = fulfill_er(S_30min, S_15min, 15)
 
 # check the sum
 
@@ -199,13 +206,31 @@ sum_check(StationData_row, S_15min)
 #W1_2er = para_W1(S_30min,S_15min)
 
 
-def para_W2(df_oben, df_unten):
-    W2 = df_unten.iloc[np.arange(len(df_oben)) * 2 + 1].value / df_oben.value
-    return W2
+def para_W2(df_oben, df_unten, pcp_thr):
+    # pcp_thr = 0.1
+    df_oben_copy = df_oben.copy(deep=True)
+    df_unten_copy = df_unten.copy(deep=True)
+
+    # get_all_pcp_abv_thr
+    df_oben_abv_thr = df_oben_copy[df_oben_copy >= pcp_thr].dropna()
+
+    shift_freq = (df_unten_copy.index[1] - df_unten_copy.index[0])
+
+    index_w1 = df_unten_copy.index.intersection(
+        df_oben_abv_thr.index - shift_freq)
+    index_w2 = df_unten_copy.index.intersection(
+        df_oben_abv_thr.index)
+
+    index_oben_w1 = index_w1 + shift_freq
+    w1 = (df_unten_copy.loc[index_w1, :] /
+          df_oben_abv_thr.loc[index_oben_w1, :].values)
+    w2 = df_unten_copy.loc[index_w2, :] / df_oben_abv_thr.values
+    # assert np.all(w1.values + w2.values) == 1
+    return w1
 
 
-W2_1er = para_W2(S_60min, S_30min)
-W2_2er = para_W2(S_30min, S_15min)
+W2_1er = para_W2(S_60min, S_30min, pcp_thr=threshold)
+W2_2er = para_W2(S_30min, S_15min, threshold)
 
 
 def cascade_sort(W):
@@ -221,48 +246,65 @@ W2_1er_sort = cascade_sort(W2_1er)
 W2_2er_sort = cascade_sort(W2_2er)
 
 
+def valueP01(W2_1er):
+    p0 = W2_1er[W2_1er == 0].dropna().size / W2_1er.size
+    p1 = W2_1er[W2_1er == 1].dropna().size / W2_1er.size
+
+    p01 = p0 + p1
+    return p01
 # use W2
 # threshold set here (0.3)
 # than separate the P01 and P andere to calculate
 
-threshold = 0.3
+
+# def valueP012(df_oben, df_unten):
+# dic = {'value_unten': df_unten.iloc[np.arange(
+# len(df_oben)) * 2 + 1].value, 'value_above': df_oben.value}
+# df = pd.DataFrame(dic)
+# df2 = df[df.value_above >= threshold]
+# w = df2.value_unten / df2.value_above
+# P01 = len(w[(w == 0) | (w == 1)]) / len(w)
+# return P01
 
 
-def valueP01(df_oben, df_unten):
-    dic = {'value_unten': df_unten.iloc[np.arange(
-        len(df_oben)) * 2 + 1].value, 'value_above': df_oben.value}
-    df = pd.DataFrame(dic)
-    df2 = df[df.value_above >= threshold]
-    w = df2.value_unten / df2.value_above
-    P01 = len(w[(w == 0) | (w == 1)]) / len(w)
-    return P01
+P01_1er = valueP01(W2_1er)
+P01_2er = valueP01(W2_2er)
+
+#
+# def valueP01_monthly(df_oben, df_unten):
+#
+# dic = {'value_unten': df_unten.iloc[np.arange(
+# len(df_oben)) * 2 + 1].value, 'value_above': df_oben.value}
+# df = pd.DataFrame(dic)
+# df2 = df[df.value_above >= threshold]
+# w = df2.value_unten / df2.value_above
+#
+# month_list = []
+# for i in range(0, 12):
+# w_mon = w.loc[(w.index.month == (i + 1))]
+# P01 = len(w_mon[(w_mon == 0) | (w_mon == 1)]) / len(w_mon)
+# month_list.append(P01)
+# del w_mon
+# return month_list
 
 
-P01_1er = valueP01(S_60min, S_30min)
-P01_2er = valueP01(S_30min, S_15min)
-
-
-def valueP01_monthly(df_oben, df_unten):
-
-    dic = {'value_unten': df_unten.iloc[np.arange(
-        len(df_oben)) * 2 + 1].value, 'value_above': df_oben.value}
-    df = pd.DataFrame(dic)
-    df2 = df[df.value_above >= threshold]
-    w = df2.value_unten / df2.value_above
+def valueP01_monthly(W2_1er):
 
     month_list = []
     for i in range(0, 12):
-        w_mon = w.loc[(w.index.month == (i + 1))]
-        P01 = len(w_mon[(w_mon == 0) | (w_mon == 1)]) / len(w_mon)
+        w_mon = W2_1er.loc[(W2_1er.index.month == (i + 1))]
+        P01 = len(w_mon[(w_mon == 0) | (w_mon == 1)
+                        ].dropna()) / len(w_mon)
         month_list.append(P01)
-        del w_mon
+
     return month_list
 
 
-P01_mon1er = valueP01_monthly(S_60min, S_30min)
-P01_mon2er = valueP01_monthly(S_30min, S_15min)
+P01_mon1er = valueP01_monthly(W2_1er)
+P01_mon2er = valueP01_monthly(W2_2er)
 
 # plot w = 0 | w = 1
+plt.ioff()
 plt.figure(1)
 plt.scatter(np.arange(1, 12 + 1), P01_mon1er)
 plt.scatter(np.arange(1, 12 + 1), P01_mon2er)
@@ -278,22 +320,37 @@ plt.show()
 # plot  0 < w < 1
 
 
-def W_innerhalb(w_layer, station_oben, station_unten):
-    df = pd.concat([w_layer, station_unten.iloc[np.arange(
-        len(station_oben)) * 2 + 1], station_oben.value], axis=1)
-    df.columns = ['percent', 'amount', 'threshold_check']
-    w_in = df[df.threshold_check >= threshold]
-    w_in = w_in[(w_in.percent > 0) & (w_in.percent < 1)]
-    plt.plot(w_in.percent, w_in.amount, 'ro')
+# def W_innerhalb(w_layer, station_oben, station_unten):
+# df = pd.concat([w_layer, station_unten.iloc[np.arange(
+# len(station_oben)) * 2 + 1], station_oben.value], axis=1)
+# df.columns = ['percent', 'amount', 'threshold_check']
+# w_in = df[df.threshold_check >= threshold]
+# w_in = w_in[(w_in.percent > 0) & (w_in.percent < 1)]
+# plt.plot(w_in.percent, w_in.amount, 'ro')
+# plt.xlabel('W value')
+# plt.ylabel('Amount')
+# plt.show()
+
+def W_innerhalb(W2_1er, df_oben, pcp_thr):
+    df_oben_abv_thr = df_oben[df_oben >= pcp_thr].dropna()
+    # assert len(df_oben_abv_thr.index) == len(W2_1er.index)
+    shift_freq = (df_oben.index[1] - df_oben.index[0]) / 2
+    idx_weights_in_01 = W2_1er[
+        (W2_1er > 0) & (W2_1er < 1)].dropna().index
+    idx_pcp_for_w = idx_weights_in_01 + shift_freq
+    w_in = W2_1er[(W2_1er > 0) & (W2_1er < 1)].dropna()
+    pcp_abv = df_oben_abv_thr.loc[idx_pcp_for_w, :].dropna()
+    plt.plot(w_in.values, pcp_abv.values, 'ro')
     plt.xlabel('W value')
     plt.ylabel('Amount')
     plt.show()
 
 
 plt.figure(2)
-W_innerhalb(W2_1er, S_60min, S_30min)
+
+W_innerhalb(W2_1er, S_60min, threshold)
 plt.figure(3)
-W_innerhalb(W2_2er, S_30min, S_15min)
+W_innerhalb(W2_2er, S_30min, threshold)
 # =============================================================================
 #  sorting the number of W  and create a excel table
 # =============================================================================
@@ -301,12 +358,13 @@ W_innerhalb(W2_2er, S_30min, S_15min)
 # equal to 0 or 1
 
 
-def W_month_number01(w, number):
+def W_month_number01(W2_1er, number):
     listnumber = []
     for i in range(1, 13):
-        num = 0
-        num = len(w[(w == number) & (w.index.month == i)])
-        listnumber.append(num)
+
+        w_mon = W2_1er.loc[(W2_1er.index.month == (i))]
+        w_nbr = len(w_mon[(w_mon == number)].dropna())
+        listnumber.append(w_nbr)
     return listnumber
 
 
@@ -319,12 +377,13 @@ W22_M1 = W_month_number01(W2_2er, 1)
 # between 0 and 1
 
 
-def W_month_numberin(w):
+def W_month_numberin(W2_1er):
     listnumber = []
     for i in range(1, 13):
-        num = 0
-        num = len(w[(w > 0) & (w < 1) & (w.index.month == i)])
-        listnumber.append(num)
+        w_mon = W2_1er.loc[(W2_1er.index.month == (i))]
+        w_nbr = len(
+            w_mon[(w_mon == 0) | (w_mon == 1)].dropna())
+        listnumber.append(w_nbr)
     return listnumber
 
 
@@ -341,18 +400,33 @@ W22_Min = W_month_numberin(W2_2er)
 
 class betafit:
 
-    def dfcreate(self, w_layer, station_oben, station_unten):
-        df = pd.concat([w_layer, station_unten.iloc[np.arange(
-            len(station_oben)) * 2 + 1], station_oben.value], axis=1)
-        df.columns = ['percent', 'amount', 'threshold_check']
+    # def dfcreate(self, w_layer, station_oben, station_unten):
+        # df = pd.concat([w_layer, station_unten.iloc[np.arange(0,
+                                                              # len(station_oben)) * 2], station_oben.value], axis=1)
+        # df.columns = ['percent', 'amount', 'threshold_check']
+        #
+    # # choose the data with constraint ( > threshold , 0 < w < 1)
+        # w_in = df[df.threshold_check >= threshold]
+        # w_in = w_in[(w_in.percent != 1) & (w_in.percent != 0)]
+        # return w_in
+    def dfcreate(self, W2_1er, df_oben, pcp_thr):
+        # df_oben_abv_thr = df_oben[df_oben >= pcp_thr].dropna()
+        # assert len(df_oben_abv_thr.index) == len(W2_1er.index)
+        # shift_freq = (df_oben.index[1] - df_oben.index[0]) / 2
+        # idx_weights_in_01 = W2_1er[
+            # (W2_1er > 0) & (W2_1er < 1)].dropna().index
+        # idx_pcp_for_w = idx_weights_in_01 + shift_freq
+        w_in = W2_1er[(W2_1er > 0) & (W2_1er < 1)].dropna()
+        # pcp_abv = df_oben_abv_thr.loc[idx_pcp_for_w, :].dropna()
 
-    # choose the data with constraint ( > threshold , 0 < w < 1)
-        w_in = df[df.threshold_check >= threshold]
-        w_in = w_in[(w_in.percent != 1) & (w_in.percent != 0)]
-        return w_in
-
+        df = pd.DataFrame(index=w_in.index)
+        df['percent'] = w_in.values
+        # df['amount_oben'] = pcp_abv
+        return df
     # Optimization
+
     def obj_logbetafun(self, x, sign=1.0):
+
         df_beta_ob = df_beta.percent.copy()
         summa = - np.log(beta.pdf(df_beta_ob, x[0], x[1])).sum()  # min sum
         return summa
@@ -366,8 +440,10 @@ class betafit:
 
     def plot_fitbeta(self, df):
         fig = plt.figure(4)
-        plt.scatter(df.percent, bf.betafun(
-            df.percent, result_beta.x[0], result_beta.x[1]), c='r', zorder=1)
+        ax = fig.add_subplot(111)
+        ax.scatter(df.percent, bf.betafun(
+            df.percent, result_beta.x[0], result_beta.x[1]),
+            c='r', zorder=1)
 
         # center labels in histogram plot
         # def bins_labels(bins, **kwargs):
@@ -377,10 +453,9 @@ class betafit:
 
         #bins_number = 50
         #bins = np.arange(0 + 1/bins_number , 1, 1/bins_number)
-        plt.hist(df.percent, bins=50, color='blue',
-                 align='mid', density=True, zorder=0)
+        ax.hist(df.percent, bins=50, color='blue',
+                align='mid', density=True, zorder=0)
         #bins_labels(bins, fontsize=10)
-        ax = fig.add_subplot(111)
 
         ax.text(0.7, 2.4, r'1 Layer', fontsize=15)
         ax.text(0.7, 2.2, r'$\beta$ = %.2f' % result_beta.x[0], fontsize=15)
@@ -393,14 +468,15 @@ class betafit:
 
 
 bf = betafit()
-df_beta = bf.dfcreate(W2_1er, S_60min, S_30min)
+df_beta = bf.dfcreate(W2_2er, S_30min, pcp_thr=0.)
 #df_beta = bf.dfcreate(W2_2er, S_30min ,S_15min)
 
 cons = {'type': 'eq',
         'fun': lambda x: np.array(x[0] - x[1])}
 
 result_beta = minimize(bf.obj_logbetafun, [
-                       2, 2], constraints=cons, method='SLSQP', options={'disp': True})
+                       2, 2], constraints=cons,
+                       method='SLSQP', options={'disp': True})
 
 bf.plot_fitbeta(df_beta)
 
@@ -419,7 +495,7 @@ StationData['active'], StationData['inactive'] = \
     (StationData.value >= 0).astype(int), - \
     (~(StationData.value >= 0)).astype(int)
 
-
+plt.ioff()
 f, (ax11, ax12) = plt.subplots(2, 1, sharex=True,
                                gridspec_kw={'height_ratios': [3, 1]})
 
@@ -444,11 +520,19 @@ plt.show()
 # remember the w2 is used not w1
 
 
+def create_df_w_pcp(w_df, df_oben, df_unen):
+    df = pd.DataFrame(index=w_df.index,
+                      data=w_df.values, columns=['percent'])
+    df['amount_unten'] = df_unen.loc[w_df.index, :]
+    df['amount_oben'] = df_oben.loc[w_df.index + (
+        df_unen.index[1] -
+        df_unen.index[0]), :].values
+    return df
+
+
 # %%(1)----------------
-df = pd.concat([W2_1er, S_30min.iloc[np.arange(
-    len(S_60min)) * 2 + 1], S_60min.value], axis=1)
-df.columns = ['percent', 'amount_unten', 'amount_oben']
-df = df[(df.percent <= 1) & (df.percent >= 0)]
+df_1 = create_df_w_pcp(W2_2er, S_30min, S_15min)
+# df = df[(df.percent <= 1) & (df.percent >= 0)]
 
 
 def makesure(df):
@@ -456,7 +540,7 @@ def makesure(df):
     return df
 
 
-df = makesure(df)
+df = makesure(df_1)
 # Optimization
 # 分成2部分   一個是P01， 一個是1 - P01
 
@@ -496,7 +580,10 @@ increment = 0.02
 min_number = 30
 
 # close to left
-intervals = np.arange(df.amount_oben.min(), df.amount_oben.max(), (df.amount_oben.max() - df.amount_oben.min()) * increment
+intervals = np.arange(df.amount_oben.min(),
+                      df.amount_oben.max(),
+                      (df.amount_oben.max() - df.amount_oben.min()
+                       ) * increment
                       )
 
 df['categories'] = pd.cut(df.amount_oben  # .amount_oben.sort_values(ascending=True)
@@ -565,8 +652,8 @@ class simulatemodeing:
     # building and select data
 
     def datamodel_BC(self, w_layer, data_oben, data_unten):
-        df = pd.concat([w_layer, data_unten.iloc[np.arange(
-            len(data_oben)) * 2 + 1], data_oben.value], axis=1)
+        df = pd.concat([w_layer, data_unten.iloc[np.arange(0,
+                                                           len(data_oben)) * 2], data_oben.value], axis=1)
         # choose the data with constraint ( > threshold , 0 < w < 1)
         # the amount unten hier beduetet zweite.
         df.columns = ['P01', 'amount_unten', 'amount_oben']
