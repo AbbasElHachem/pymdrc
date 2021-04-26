@@ -226,11 +226,11 @@ def para_W2(df_oben, df_unten, pcp_thr):
           df_oben_abv_thr.loc[index_oben_w1, :].values)
     w2 = df_unten_copy.loc[index_w2, :] / df_oben_abv_thr.values
     # assert np.all(w1.values + w2.values) == 1
-    return w1
+    return w1, w2
 
 
-W2_1er = para_W2(S_60min, S_30min, pcp_thr=threshold)
-W2_2er = para_W2(S_30min, S_15min, threshold)
+W2_1er, W2_2_1er = para_W2(S_60min, S_30min, pcp_thr=threshold)
+W2_2er, W2_2_2er = para_W2(S_30min, S_15min, threshold)
 
 
 def cascade_sort(W):
@@ -300,6 +300,7 @@ def valueP01_monthly(W2_1er):
     return month_list
 
 
+# len(P01_mon1er)
 P01_mon1er = valueP01_monthly(W2_1er)
 P01_mon2er = valueP01_monthly(W2_2er)
 
@@ -468,7 +469,7 @@ class betafit:
 
 
 bf = betafit()
-df_beta = bf.dfcreate(W2_2er, S_30min, pcp_thr=0.)
+df_beta = bf.dfcreate(W2_2er, S_60min, pcp_thr=threshold)
 #df_beta = bf.dfcreate(W2_2er, S_30min ,S_15min)
 
 cons = {'type': 'eq',
@@ -648,22 +649,55 @@ plt.show()
 
 class simulatemodeing:
 
-    threshold = 0.3
+    # threshold = 0.3
     # building and select data
 
-    def datamodel_BC(self, w_layer, data_oben, data_unten):
-        df = pd.concat([w_layer, data_unten.iloc[np.arange(0,
-                                                           len(data_oben)) * 2], data_oben.value], axis=1)
-        # choose the data with constraint ( > threshold , 0 < w < 1)
-        # the amount unten hier beduetet zweite.
-        df.columns = ['P01', 'amount_unten', 'amount_oben']
+    # def datamodel_BC(self, w_layer, data_oben, data_unten):
+        # df = pd.concat([w_layer, data_unten.iloc[np.arange(0,
+                                                           # len(data_oben)) * 2], data_oben.value], axis=1)
+        # # choose the data with constraint ( > threshold , 0 < w < 1)
+        # # the amount unten hier beduetet zweite.
+        # df.columns = ['P01', 'amount_unten', 'amount_oben']
+        # df = df[df.amount_oben >= threshold]
+        # df = df[(df.P01 <= 1) & (df.P01 >= 0)]
+        # return df
+
+    def valueP01_monthly(self, w_df):
+
+        month_list = []
+        for i in range(0, 12):
+            w_mon = w_df.loc[(w_df.index.month == (i + 1))]
+            P01 = len(w_mon[(w_mon == 0) | (w_mon == 1)
+                            ].dropna()) / len(w_mon)
+            month_list.append(P01)
+
+        return month_list
+
+    def datamodel_BC(self, w_df, df_oben, df_unen, pcp_thr):
+        df_oben = df_oben[df_oben >= pcp_thr]
+        df = pd.DataFrame(index=w_df.index,
+                          data=w_df.values, columns=['percent'])
+        df['amount_unten'] = df_unen.loc[w_df.index, :]
+        df['amount_oben'] = df_oben.loc[w_df.index + (
+            df_unen.index[1] -
+            df_unen.index[0]), :].values
         df = df[df.amount_oben >= threshold]
-        df = df[(df.P01 <= 1) & (df.P01 >= 0)]
+        df = df[(df.percent <= 1) & (df.percent >= 0)]
         return df
+
+    def model_BC_P01(self, df_data_BC):
+        P01_val_month = self.valueP01_monthly(df_data_BC.percent)
+        for month in range(0, 12):
+            idx_month = df_data_BC.loc[df_data_BC.index.month ==
+                                       month + 1, :].index
+            df_data_BC.loc[idx_month, 'P01'] = P01_val_month[month]
+        return df_data_BC
 
     def datamodel_DP(self, data_oben, data_unten):
         df = pd.concat(
-            [data_unten.iloc[np.arange(len(data_oben)) * 2 + 1], data_oben.value], axis=1)
+            [data_unten.iloc[np.arange(0,
+                                       len(data_oben)) * 2],
+             data_oben.value], axis=1)
         # choose the data with constraint ( > threshold , 0 < w < 1)
         # the amount unten hier beduetet zweite.
         df.columns = ['amount_unten', 'amount_oben']
@@ -681,13 +715,17 @@ class simulatemodeing:
         datafr['RV'] = np.random.rand(len(datafr), 1)
         return datafr
 
+    def df_RV2(self, datafr):
+        datafr['RV2'] = np.random.rand(len(datafr), 1)
+        return datafr
+
     def W_simulation(self, datafr):
         # the R_simulation there is R2
         datafr['W2_simu'] = datafr.RV.copy()
 
         for i in np.arange(0, len(datafr)):
             RV2 = 0
-            if datafr.P01[i] >= datafr.RV[i]:
+            if datafr.percent[i] >= datafr.RV[i]:
                 # generate RV2
                 RV2 = np.random.rand(1)
 
@@ -714,21 +752,52 @@ class simulatemodeing:
 cas = simulatemodeing()
 df_BCmodel = cas.datamodel_BC(W2_1er, S_60min, S_30min)
 df_BCmodel = cas.makesure(df_BCmodel)
+df_BCmodel = cas.model_BC_P01(df_BCmodel)
 df_BCmodel = cas.df_RV(df_BCmodel)
+df_BCmodel = cas.df_RV2(df_BCmodel)
 df_BCmodel = cas.W_simulation(df_BCmodel)
 df_BCmodel = cas.R_simulation(df_BCmodel)
 
-##
+# these values will be either 0 or 1
+idx_p01 = np.where(df_BCmodel.RV <= df_BCmodel.P01)[0]
+df_BCmodel_01 = df_BCmodel.iloc[idx_p01, :]
+idx_w0 = df_BCmodel_01.iloc[np.where(df_BCmodel_01.RV2 <= 0.5)[0], :].index
+idx_w1 = df_BCmodel_01.iloc[np.where(df_BCmodel_01.RV2 > 0.5)[0], :].index
+
+df_BCmodel.loc[idx_w0, 'W0'] = 0
+df_BCmodel.loc[idx_w0, 'W1'] = 1
+
+df_BCmodel.loc[idx_w1, 'W0'] = 1
+df_BCmodel.loc[idx_w1, 'W1'] = 0
+
+
+idx_w01 = df_BCmodel.iloc[np.where(df_BCmodel.RV > df_BCmodel.P01)[0], :].index
+df_BCmodel.loc[idx_w01, 'W0'] = np.random.beta(
+    result_beta.x[0], result_beta.x[1],
+    size=len(idx_w01))
+
+df_BCmodel.loc[idx_w01, 'W1'] = 1 - df_BCmodel.loc[idx_w01, 'W0']
+
+df_BCmodel['R1'] = df_BCmodel.loc[
+    :, 'amount_oben'] * df_BCmodel.loc[:, 'W0']
+df_BCmodel['R2'] = df_BCmodel.loc[
+    :, 'amount_oben'] * df_BCmodel.loc[:, 'W1']
+# assert np.all(df_BCmodel['SimR1'].values +
+# df_BCmodel['SimR2'].values) == df_BCmodel.loc[:, 'amount_oben'].values
+#
+# pass
 # choose 2016 autumn season (789)
 ##
 df_BCmodel = df_BCmodel[df_BCmodel.index.year == 2016]
 # df_BCmodel = df_BCmodel[(df_BCmodel.index.month == 7) |
 #                        (df_BCmodel.index.month == 8) |
 #                         (df_BCmodel.index.month == 9)]
-
+plt.ioff()
 fig = plt.figure(7)
 plt.plot(  # df_model.index, df_model.amount_oben, 'b--'
-    df_BCmodel.index, df_BCmodel.amount_unten, 'r*', df_BCmodel.index, df_BCmodel.R1, 'gx')
+    S_30min.loc[W2_1er.index, :].index,
+    S_30min.loc[W2_1er.index, :].values, 'r',
+    df_BCmodel.index, df_BCmodel.R1, 'g')
 plt.title('R2', fontsize=20)
 plt.xlabel('Time', fontsize=15)
 plt.ylabel('Rainfall (mm)', fontsize=15)
