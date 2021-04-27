@@ -21,9 +21,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from scipy import optimize
-
-from scipy import stats
 from scipy.stats import beta as beta_dist_fct
 from scipy.special import gamma as gammaf
 from scipy.optimize import minimize
@@ -141,7 +138,8 @@ class CascadeModel():
         temp_shift: shift the data based on 
         timestamps (+- 0 to 5), default: 0
 
-        label_shift: shift time label by certain values (used for timezones)
+        label_shift: shift time label by certain
+         values (used for timezones)
 
         leave_nan: boolean, optional
             True, if the nan values should remain
@@ -174,7 +172,7 @@ class CascadeModel():
 
 
         """
-        df = self.df
+        df = self.df.copy(deep=True)
 
         if shift == True:
             df_copy = df.copy()
@@ -379,7 +377,8 @@ class CascadeModel():
                                ) * increment)
 
         df['categories'] = pd.cut(df.amount_oben,
-                                  bins=intervals, labels=False)
+                                  bins=intervals,
+                                  labels=False)
 
         return df
 
@@ -496,60 +495,31 @@ class betafit:
 
 class simulatemodeing:
 
-    def valueP01_monthly(self, w_df):
-
-        month_list = []
-        for i in range(0, 12):
-            w_mon = w_df.loc[(w_df.index.month == (i + 1))]
-            P01 = len(w_mon[(w_mon == 0) | (w_mon == 1)
-                            ].dropna()) / len(w_mon)
-            month_list.append(P01)
-
-        return month_list
-
-    def datamodel_BC(self, w_df, df_oben, df_unen, threshold):
+    def datamodel_BC(self, df_oben, threshold):
         df_oben = df_oben[df_oben >= threshold]
-        df = pd.DataFrame(index=w_df.index,
-                          data=w_df.values, columns=['percent'])
-        df['amount_unten'] = df_unen.loc[w_df.index, :]
-        df['amount_oben'] = df_oben.loc[w_df.index + (
-            df_unen.index[1] -
-            df_unen.index[0]), :].values
-        df = df[df.amount_oben >= threshold]
-        df = df[(df.percent <= 1) & (df.percent >= 0)]
-        return df
+        df = pd.DataFrame(index=df_oben.index,
+                          data=df_oben.values,
+                          columns=['R_orig'])
+        df_pcp = df.dropna(how='all')
+        return df_pcp
 
-    def model_BC_P01(self, df_data_BC):
-        P01_val_month = self.valueP01_monthly(df_data_BC.percent)
+    def model_BC_P01(self, df_data_BC, P01_val_month):
         for month in range(0, 12):
             idx_month = df_data_BC.loc[df_data_BC.index.month ==
                                        month + 1, :].index
             df_data_BC.loc[idx_month, 'P01'] = P01_val_month[month]
         return df_data_BC
 
-    def datamodel_DP(self, data_oben, data_unten):
-        df = pd.concat(
-            [data_unten.iloc[np.arange(0,
-                                       len(data_oben)) * 2],
-             data_oben.value], axis=1)
-        # choose the data with constraint ( > threshold , 0 < w < 1)
-        # the amount unten hier beduetet zweite.
-        df.columns = ['amount_unten', 'amount_oben']
-        df = df[df.amount_oben >= threshold]
-        # calculate P01 with parameters a and b caculated before
-        Z01 = result_log.x[0] + result_log.x[1] * np.log(df.amount_oben)
-        df['P01'] = 1 - (1 / (1 + np.exp(-Z01)))
-        return df
+    def model_DC_P01(self, datafr, result_log):
 
-    def makesure(self, datafr):
-        datafr[datafr.amount_oben < 0] = 0
+        # calculate P01 with parameters a and b caculated before
+        Z01 = (result_log.x[0] + result_log.x[1] *
+               np.log(datafr.R_orig))
+        datafr['P01'] = 1 - (1 / (1 + np.exp(-Z01)))
         return datafr
 
     def df_RV(self, datafr):
         datafr['RV'] = np.random.rand(len(datafr), 1)
-        return datafr
-
-    def df_RV2(self, datafr):
         datafr['RV2'] = np.random.rand(len(datafr), 1)
         return datafr
 
@@ -569,7 +539,7 @@ class simulatemodeing:
         datafr.loc[idx_w1, 'W1'] = 0
         return datafr
 
-    def assign_W01_beta(self, datafr):
+    def assign_W01_beta(self, datafr, result_beta):
 
         idx_w01 = datafr.iloc[
             np.where(datafr.RV > datafr.P01)[0], :].index
@@ -581,15 +551,31 @@ class simulatemodeing:
             1 - datafr.loc[idx_w01, 'W0'])
         return datafr
 
-    def R_simulation(self, datafr):
+    def R_simulation(self, datafr, df_orig_lower, result_beta,
+                     result_log,
+                     model_='Basic'):
+        if model_ == 'Basic':
+            datafr = self.assign_W01_P01(datafr)
+        elif model_ == 'Dependent':
+            datafr = self.model_DC_P01(datafr, result_log)
+        datafr = self.assign_W01_beta(datafr, result_beta)
 
-        datafr = self.assign_W01_P01(datafr)
-        datafr = self.assign_W01_beta(datafr)
-        df_final = pd.DataFrame(index=datafr.index)
-        df_final['R1'] = datafr.loc[
-            :, 'amount_oben'] * datafr.loc[:, 'W0']
-        df_final['R2'] = datafr.loc[
-            :, 'amount_oben'] * datafr.loc[:, 'W1']
+        shift_freq = (df_orig_lower.index[1] - df_orig_lower.index[0])
+
+        index_w1 = df_orig_lower.index.intersection(
+            datafr.index - shift_freq)
+
+        index_df_final = pd.DatetimeIndex(index_w1.append(datafr.index))
+        df_final = pd.DataFrame(index=index_df_final,
+                                columns=['R1'])
+
+        vals_left = (datafr.loc[:, 'R_orig'].values *
+                     datafr.loc[:, 'W0'].values)
+        vals_right = (datafr.loc[:, 'R_orig'].values *
+                      datafr.loc[:, 'W1'].values)
+        # index_oben_w1 = index_w1 + shift_freq
+        df_final.loc[index_w1, 'R1'] = vals_left
+        df_final.loc[datafr.index, 'R1'] = vals_right
         return df_final
 
 
@@ -642,6 +628,7 @@ if __name__ == '__main__':
     for _agg in ll:
         upper_level_agg = str(_agg) + 'Min'
         lower_level_agg = str(int(_agg / 2)) + 'Min'
+
         # 60-120-240-480-720-1440
         df_upper_level = main_class.resampleDf(upper_level_agg)
         df_lower_level = main_class.resampleDf(lower_level_agg)
@@ -703,15 +690,126 @@ if __name__ == '__main__':
             agg_lower_level=lower_level_agg)
 
         cas = simulatemodeing()
-        df_BCmodel = cas.datamodel_BC(w1, df_upper_level,
-                                      df_lower_level,
-                                      threshold=trace_rainfall)
-        df_BCmodel = cas.makesure(df_BCmodel)
-        df_BCmodel = cas.model_BC_P01(df_BCmodel)
-        df_BCmodel = cas.df_RV(df_BCmodel)
-        df_BCmodel = cas.df_RV2(df_BCmodel)
-        df_BCmodel = cas.R_simulation(df_BCmodel)
-        break
+        df_formodel = cas.datamodel_BC(df_upper_level,
+                                       threshold=trace_rainfall)
+        df_formodel = cas.df_RV(df_formodel)
+        df_BCmodel = cas.model_BC_P01(df_formodel, P01_level_monthly)
+
+        # df_BCmodel = cas.assign_W01_P01(df_BCmodel)
+        # df_BCmodel = cas.assign_W01_beta(df_BCmodel,
+        # result_beta=result_beta)
+
+        df_final_BC = cas.R_simulation(datafr=df_BCmodel,
+                                       df_orig_lower=df_lower_level,
+                                       result_beta=result_beta,
+                                       result_log=result_log,
+                                       model_='Basic')
+
+        df_final_DC = cas.R_simulation(datafr=df_formodel,
+                                       df_orig_lower=df_lower_level,
+                                       result_beta=result_beta,
+                                       result_log=result_log,
+                                       model_='Basic')
+
+        df_orig_lo = df_lower_level.loc[
+            df_final_BC.index, :]
+
+        df_comp = df_final_BC.copy(deep=True)
+        df_comp['orig'] = df_orig_lo
+        df_comp['RDC'] = df_final_DC
+        # df_comp.plot()
+        plt.ioff()
+        plt.figure(figsize=(12, 8))
+        plt.scatter(df_comp.orig, df_comp.R1, c='r', alpha=0.75,
+                    label='BC')
+        plt.scatter(df_comp.orig, df_comp.RDC, c='g', alpha=0.75,
+                    label='DC')
+        plt.legend(loc=0)
+        plt.xlabel('Orig')
+        plt.ylabel('Model')
+        plt.grid()
+        plt.savefig('scatter_orig_vs_sim_%s_%s.png' %
+                    (upper_level_agg,
+                     lower_level_agg))
+
+        plt.ioff()
+        plt.figure(figsize=(12, 8))
+        plt.plot(range(df_comp.orig.size),
+                 np.cumsum(df_comp.orig.values),
+                 c='k', alpha=0.75, linewidth=2.75,
+                 label='Obsv')
+
+        plt.plot(range(df_comp.orig.size),
+                 np.cumsum(df_comp.R1.values),
+                 c='r', alpha=0.75, linewidth=2.85,
+                 label='BC')
+
+        plt.plot(range(df_comp.orig.size),
+                 np.cumsum(df_comp.RDC.values),
+                 c='g', alpha=0.75, linewidth=2.95,
+                 label='DC')
+
+        plt.legend(loc=0)
+        plt.xlabel('Steps')
+        plt.ylabel('Pcp[mm/%s]' % lower_level_agg)
+        plt.grid(alpha=0.25)
+        plt.savefig('cumsum_orig_vs_sim_%s_%s.png' %
+                    (upper_level_agg,
+                     lower_level_agg))
+        plt.close()
+
+        from statsmodels.distributions.empirical_distribution import ECDF
+
+        ecdf = ECDF
+
+        def build_edf_fr_vals(data):
+            """ construct empirical distribution 
+            function given data values """
+
+            data = data.ravel()
+            cdf = ECDF(data)
+            x0 = cdf.x[1:]
+            y0 = cdf.y[1:]
+            x0 = np.array(x0, dtype=float)
+            y0 = np.array(y0, dtype=float)
+            return x0, y0
+
+        rorig, yorig = build_edf_fr_vals(df_comp.orig.values.ravel())
+        rR1, yR1 = build_edf_fr_vals(df_comp.R1.values.ravel())
+        rRDC, yRDC = build_edf_fr_vals(df_comp.RDC.values.ravel())
+        plt.ioff()
+        plt.figure(figsize=(12, 8))
+        plt.plot(rorig,
+                 yorig,
+                 c='k', alpha=0.75, linewidth=2.75,
+                 label='Obsv')
+
+        plt.plot(rR1,
+                 yR1,
+                 c='r', alpha=0.75, linewidth=2.85,
+                 label='BC')
+
+        plt.plot(rRDC,
+                 yRDC,
+                 c='g', alpha=0.75, linewidth=2.95,
+                 label='DC')
+
+        plt.legend(loc=0)
+        plt.ylabel('F(x)')
+        plt.xlabel('Pcp[mm/%s]' % lower_level_agg)
+        plt.grid(alpha=0.25)
+        plt.savefig('ecdf_orig_vs_sim_%s_%s.png' %
+                    (upper_level_agg,
+                     lower_level_agg))
+        plt.close()
+        # from scipy.stats import spearmanr, pearsonr
+        #
+        # spearmanr(df_comp.R1, df_comp.orig)
+        # pearsonr(df_comp.R1, df_comp.orig)
+        #
+        # spearmanr(df_comp.RDC, df_comp.orig)
+        # pearsonr(df_comp.RDC, df_comp.orig)
+        # break
     STOP = timeit.default_timer()
     print(('\n#### Done with everything on %s.\nTotal run time was'
            ' about %0.4f seconds ####' % (time.asctime(), STOP - START)))
