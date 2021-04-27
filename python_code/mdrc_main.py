@@ -4,60 +4,12 @@ Created on %(date)s
 
 @author: EL Hachem Abbas, IWS
 """
+from networkx.algorithms import threshold
 
 '''
 This Script is for a Multiplicative Discrete Random Cascade Model (MDRC)
 
-First read rainfall data on a fine resolution (1hour) and aggregate the data
-to higher time frequencies:
-(input Level: 1day; upper Level: 12hrs; middle Level: 6hrs, lower level: 3hrs
-lowest level: 1.5hrs).
-
-Second disaggregating the data through a mutiplicative Discrete Random Cascade
-model (MDRC) (1440min->720min->360min->180min->90min),
-at the end, rainfall on a finer resolution will be simulated
-using a higher time frequency data.
-
-This MDRC is a Microcanonical model: it conserves volumes in every level.
-
-The first step is to find the weights (W1 and W2) of every level, this is done
-by finding if the volume (V0) in the upper level (60min) has fallen
-in the first sub interval (V1=V0.W1) or the second (V2=V0.W2) or in both.
-
-Finding model parameters:
-For every recorded rainfall in the upper level if volume > threshhold (0.3mm)
-find W1 = R1/R and (W2 = 1-W1).
-A sample of W is obtained in every level, plot histogram to find distribution.
-
-The weights represent a probability of how the rainfall volume is distributed,
-Three possible values for the weights:
-W1 = 0 means all rainfall fell in 2nd sub-interval P (W=0)
-W1 = 1 means all rainfall fell in 1st sub-interval P (W=1)
-0 < W1 < 1 means part of rainfall fell in 1st sub iterval and part in the 2nd
-For calculating P01, the relation between the volumes and the weights is
-modeled through a logistic regression.
-For calculating the prob P (0<W<1) a beta distribution is assigned
-and using the maximum likelihood method the parameter ß is estimated
-for every cascade level and every station.
-The MDRC baseline model has two parameters P01 and ß per level.
-
-the MDRC unbounded model is introduced and allows relating the probability
-P01 to the rainfall volume R through a logistic regression function
-the parameters of the logisticRegression fct: a an b are estimated
-using the maximum likelihood method. This is done by first identifying where
-w is 0 or 1 and for these values, find the corresponding rainfall volume R
-and use log(logisticRegression fct) and where w is between ]0:1[ use
-log(1-logisticRegression fct), in that way the parameters a and b are estimated
-using all of the observed weights. This is done for every station and every
-cascade level, therefore the unbounded model has three parameters per level
-a, b and beta. the value of beta is the same used in the baseline model
-
-
-Analysing:
-Once parameters are found, study the effect of the time and space on them:
-First divide the events into 4 different boxes:
-(Isolated: 010, Enclosed: 111, Followed: 011, Preceded: 110  ), plot them
-Second extract the P01 for every month and plot it
+Temporal Rainfall Disaggregation 
 '''
 
 
@@ -69,8 +21,10 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+from scipy import optimize
 
-from scipy.stats import beta
+from scipy import stats
+from scipy.stats import beta as beta_dist_fct
 from scipy.special import gamma as gammaf
 from scipy.optimize import minimize
 
@@ -91,14 +45,72 @@ class CascadeModel():
 
         return self.temp_agg
 
+    def plot_station_data(self, df_to_plot, temp_agg):
+        StationData = df_to_plot.copy(deep=True)
+
+        # hourly
+
+        if temp_agg < '600min':
+            StationData = StationData_row.reindex(
+                pd.date_range(StationData_row.index.floor('D').min(),
+                              StationData_row.index.ceil('D').max(),
+                              freq='H'))[:-1]
+
+        StationData['active'], StationData['inactive'] = \
+            (StationData.values >= 0).astype(int), - \
+            (~(StationData.values >= 0)).astype(int)
+
+        plt.ioff()
+        _, (ax11, ax12) = plt.subplots(
+            2, 1, figsize=(12, 8), sharex=True,
+            gridspec_kw={'height_ratios': [3, 1]})
+
+        ax11.plot(StationData.index,
+                  StationData.iloc[:, 0].values, c='g')
+        ax11.set_ylabel('Pcp [mm/%s]' % temp_agg, fontsize=14)
+        for (v, c) in [(1, 'b'), (0, 'r')]:
+            ax12.scatter(
+                StationData.index[StationData.active == v],
+                StationData.active[StationData.active == v],
+                s=5, c=c)
+
+        ax12.set_ylabel('Acitve / Inactive', fontsize=12)
+        ax12.set_ylim([-0.5, 1.5])
+        ax12.yaxis.set_visible(False)
+        ax11.set_title('Rainfall - %s' % temp_agg,
+                       fontsize=16)
+        plt.xlabel('Time', fontsize=14)
+        plt.tight_layout()
+        ax11.grid(True), ax12.grid(True)
+        plt.savefig('station_data_%s.png' % temp_agg)
+        plt.close()
+        return
+
+    def create_agg_levels(self):
+        '''
+        go up cascade levels using a branching number of 2
+        untill desired number of cascades is reached
+        '''
+        df = self.df
+        cascade_levels = self.cascade_levels
+        input_agg = self.find_init_temp_agg(df)
+        upper_level = int(input_agg)
+        agg_levels = [upper_level]
+        for _ in range(1, cascade_levels + 1):
+            upper_level = int(2 * (upper_level))
+            agg_levels.append(upper_level)
+            # print(upper_level)
+        agg_levels_top_down = agg_levels[::-1]
+        return agg_levels_top_down
+
     def sum_check(self, df1, df2):
-        if abs(df1.value.sum() - df2.value.sum()) <= 10**-4:
+        if abs(df1.values.sum() - df2.values.sum()) <= 10**-4:
             pass
         else:
             print('error')
         return
 
-    def resampleDf(self, df, agg,
+    def resampleDf(self, agg,
                    closed='right', label='right',
                    shift=False, leave_nan=True,
                    label_shift=None,
@@ -162,6 +174,7 @@ class CascadeModel():
 
 
         """
+        df = self.df
 
         if shift == True:
             df_copy = df.copy()
@@ -216,16 +229,382 @@ class CascadeModel():
 
         return df_agg
 
+    def calc_weights_level(self, df_oben, df_unten, pcp_thr):
+        ''' find weights per level'''
+        # pcp_thr = 0.1
+        df_oben_copy = df_oben.copy(deep=True)
+        df_unten_copy = df_unten.copy(deep=True)
 
+        # get_all_pcp_abv_thr
+        df_oben_abv_thr = df_oben_copy[df_oben_copy >= pcp_thr].dropna()
+
+        shift_freq = (df_unten_copy.index[1] - df_unten_copy.index[0])
+
+        index_w1 = df_unten_copy.index.intersection(
+            df_oben_abv_thr.index - shift_freq)
+        index_w2 = df_unten_copy.index.intersection(
+            df_oben_abv_thr.index)
+
+        index_oben_w1 = index_w1 + shift_freq
+        w1 = (df_unten_copy.loc[index_w1, :] /
+              df_oben_abv_thr.loc[index_oben_w1, :].values)
+        w2 = df_unten_copy.loc[index_w2, :] / df_oben_abv_thr.values
+        # assert np.all(w1.values + w2.values) == 1
+        return w1, w2
+
+    def mean_w_month(self, weights_level):
+        '''find mean w values per month '''
+        cats = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        months = pd.Categorical(weights_level.index.strftime(
+            '%b'), categories=cats, ordered=True)
+        W_sort = weights_level.groupby(
+            [months, weights_level.index.time]).mean().unstack()
+        return W_sort.mean(axis=1)
+
+    def valueP01(self, weights_level):
+        ''' calculate P01 per level 
+
+            this values reflects the probability of rainfall
+            from upper level falling completely in one of the
+            sub-intervals in the lower level
+        '''
+        p0 = (weights_level[weights_level == 0].dropna().size /
+              weights_level.size)
+        p1 = (weights_level[weights_level == 1].dropna().size /
+              weights_level.size)
+
+        p01 = p0 + p1
+        return p01
+
+    def valueP01_monthly(self, weights_level):
+        ''' group P01 for every month seperately
+        this incorporates the yearly variation
+         '''
+        P01_month_list = []
+        for i in range(0, 12):
+            w_mon = weights_level.loc[
+                (weights_level.index.month == (i + 1))]
+            P01 = len(w_mon[(w_mon == 0) | (w_mon == 1)
+                            ].dropna()) / len(w_mon)
+            P01_month_list.append(P01)
+
+        return P01_month_list
+
+    def plot_P01_monthly(self, P01_month,
+                         agg_upper_level,
+                         agg_lower_level):
+        '''scatter plot P01 for every month '''
+        # plot w = 0 | w = 1
+        plt.ioff()
+        plt.figure(figsize=(12, 8))
+        plt.scatter(np.arange(1, 12 + 1), P01_month)
+        plt.title(r'$P01$' + '(Monthly)' +
+                  '%s - %s' % (agg_upper_level, agg_lower_level),
+                  fontsize=20)
+        plt.xlabel('Month', fontsize=15)
+        plt.ylabel('P01', fontsize=15)
+        plt.xlim((0.5, 12.5))
+        plt.ylim((0, 1))
+        plt.legend(['Upper agg:%s' % agg_upper_level,
+                    'Lower agg:%s' % agg_lower_level])
+        plt.grid(True)
+        plt.savefig('P01_monthly_%s_%s.png'
+                    % (agg_upper_level, agg_lower_level))
+        plt.close()
+
+        return
+
+    def W_innerhalb(self, weights_level, df_oben, pcp_thr,
+                    agg_upper_level, agg_lower_level):
+        ''' Scatter plot of the W1 weights per level'''
+        df_oben_abv_thr = df_oben[df_oben >= pcp_thr].dropna()
+        # assert len(df_oben_abv_thr.index) == len(W2_1er.index)
+        shift_freq = (df_oben.index[1] - df_oben.index[0]) / 2
+        idx_weights_in_01 = weights_level[
+            (weights_level > 0) & (weights_level < 1)].dropna().index
+        idx_pcp_for_w = idx_weights_in_01 + shift_freq
+        w_in = weights_level[
+            (weights_level > 0) & (weights_level < 1)].dropna()
+        pcp_abv = df_oben_abv_thr.loc[idx_pcp_for_w, :].dropna()
+        plt.ioff()
+        plt.figure(figsize=(12, 8))
+        plt.plot(w_in.values, pcp_abv.values, 'ro')
+        plt.xlabel('W value')
+        plt.ylabel('Pcp [mm/%s]' % agg_upper_level)
+        plt.grid()
+        plt.savefig('W1_level_%s_%s.png'
+                    % (agg_upper_level, agg_lower_level))
+        plt.close()
+        return
+
+    def create_df_w_pcp(self, w_df, df_oben, df_unten):
+        df = pd.DataFrame(index=w_df.index,
+                          data=w_df.values, columns=['percent'])
+        df['amount_unten'] = df_unten.loc[w_df.index, :]
+        df['amount_oben'] = df_oben.loc[w_df.index + (
+            df_unten.index[1] -
+            df_unten.index[0]), :].values
+
+        return df
+
+    def makesure(self, df):
+        df[df.amount_oben < 0] = 0
+        return df
+
+    def obj_logfun(self, x):
+
+        df_logRegress_01 = df[(df.percent == 0) | (
+            df.percent == 1)].amount_oben.copy()
+        df_logRegress_inner = df[(df.percent < 1) & (
+            df.percent > 0)].amount_oben.copy()
+
+        Z01_01 = x[0] + x[1] * np.log(df_logRegress_01)
+        Z01_inner = x[0] + x[1] * np.log(df_logRegress_inner)
+
+        summa1_01 = - np.log(1 - 1 / (1 + np.exp(-Z01_01))).sum()
+        summa1_inner = - np.log(1 / (1 + np.exp(-Z01_inner))).sum()
+
+        return summa1_01 + summa1_inner
+
+    def logfun(self, x, a, b):
+        Z01 = a + b * np.log(x)
+        return 1 - 1 / (1 + np.exp(-Z01))
+
+    def create_intervals_p01(self, df):
+        intervals = np.arange(df.amount_oben.min(),
+                              df.amount_oben.max(),
+                              (df.amount_oben.max() -
+                               df.amount_oben.min()
+                               ) * increment)
+
+        df['categories'] = pd.cut(df.amount_oben,
+                                  bins=intervals, labels=False)
+
+        return df
+
+    def interval_P01(self, df, min_number=30):
+        P01_list = []
+
+        for i in np.arange(0, df.categories.max() + 1):
+            dfs = df[df.categories == i]
+            if len(dfs) >= min_number:
+                P01 = len(dfs[(dfs.percent == 0) |
+                              (dfs.percent == 1)]) / len(dfs)
+            else:
+                pass
+
+            P01_list.append(P01)
+
+        return P01_list
+
+    def meanR_class(self, df, min_number=30):
+        meanR_list = []
+
+        for i in np.arange(0, df.categories.max() + 1):
+            dfs = df[df.categories == i]
+            if len(dfs) >= min_number:
+                meanR_list.append(dfs.amount_oben.mean())
+            else:
+                meanR_list.append(np.nan)
+
+        return meanR_list
+
+    def plot_log_reg_P01(self, df, agg_upper_level, agg_lower_level):
+        # plot it
+        plt.figure(figsize=(12, 8))
+
+        x_value = df.amount_oben.sort_values(ascending=True)
+        plt.plot(np.log(x_value), self.logfun(
+            x_value, result_log.x[0], result_log.x[1]),
+            label='Model')
+        #,color='blue') #, normed=True)#, zorder=0)
+        plt.scatter(np.log(meanR), P01_class, c='r', zorder=1,
+                    label='Obsv')
+
+        plt.title('LogRegr, %s-%s' % (agg_upper_level,
+                                      agg_lower_level), fontsize=20)
+        plt.xlabel(r'$Log_1$' + r'$_0$' + r'$R$', fontsize=15)
+        plt.ylabel(r'$P_0$' + r'$_1$', fontsize=15)
+        plt.grid(True)
+        plt.legend(loc=0)
+        plt.savefig('P01_LogReg_%s_%s.png'
+                    % (agg_upper_level, agg_lower_level))
+        plt.close()
+#=======================================================================
+#
+#=======================================================================
+
+
+class betafit:
+
+    def dfcreate(self, W2_1er):
+
+        w_in = W2_1er[(W2_1er > 0) & (W2_1er < 1)].dropna()
+        # pcp_abv = df_oben_abv_thr.loc[idx_pcp_for_w, :].dropna()
+        df = pd.DataFrame(index=w_in.index)
+        df['percent'] = w_in.values
+
+        return df
+    # Optimization
+    # df_beta = self.dfcreate()
+
+    def obj_logbetafun(self, x):
+
+        df_beta_ob = df_beta.percent.copy()
+        summa = - np.log(
+            beta_dist_fct.pdf(
+                df_beta_ob, x[0], x[1])).sum()  # min sum
+        return summa
+
+    def betafun(self, x, a, b):
+        return (gammaf(a + b) / gammaf(a) / gammaf(b) *
+                x**(a - 1) * (1 - x)**(b - 1))
+
+    def plot_fitbeta(self, df, agg_upper_level, agg_lower_level):
+        fig = plt.figure(figsize=(12, 8))
+        ax = fig.add_subplot(111)
+        ax.scatter(df.percent, bf.betafun(
+            df.percent, result_beta.x[0], result_beta.x[1]),
+            c='r', zorder=1)
+
+        #bins_number = 50
+        #bins = np.arange(0 + 1/bins_number , 1, 1/bins_number)
+        ax.hist(df.percent, bins=50, color='blue',
+                align='mid',
+                density=True, zorder=0)
+        #bins_labels(bins, fontsize=10)
+
+        plt.title(r'$\beta$ = %.2f'
+                  r' %s-%s' % (result_beta.x[0],
+                               agg_upper_level, agg_lower_level),
+                  fontsize=14)
+        ax.text(0.7, 2.2, r'$\beta$ = %.2f' %
+                result_beta.x[0], fontsize=15)
+
+        plt.xlabel('W values ]0, 1[', fontsize=16)
+        plt.ylabel('Probability density function', fontsize=16)
+        plt.grid(True, alpha=0.5)
+        plt.savefig('W_beta_fct_%s_%s.png'
+                    % (agg_upper_level, agg_lower_level))
+        plt.close()
+
+#=======================================================================
+#
+#=======================================================================
+
+
+class simulatemodeing:
+
+    def valueP01_monthly(self, w_df):
+
+        month_list = []
+        for i in range(0, 12):
+            w_mon = w_df.loc[(w_df.index.month == (i + 1))]
+            P01 = len(w_mon[(w_mon == 0) | (w_mon == 1)
+                            ].dropna()) / len(w_mon)
+            month_list.append(P01)
+
+        return month_list
+
+    def datamodel_BC(self, w_df, df_oben, df_unen, threshold):
+        df_oben = df_oben[df_oben >= threshold]
+        df = pd.DataFrame(index=w_df.index,
+                          data=w_df.values, columns=['percent'])
+        df['amount_unten'] = df_unen.loc[w_df.index, :]
+        df['amount_oben'] = df_oben.loc[w_df.index + (
+            df_unen.index[1] -
+            df_unen.index[0]), :].values
+        df = df[df.amount_oben >= threshold]
+        df = df[(df.percent <= 1) & (df.percent >= 0)]
+        return df
+
+    def model_BC_P01(self, df_data_BC):
+        P01_val_month = self.valueP01_monthly(df_data_BC.percent)
+        for month in range(0, 12):
+            idx_month = df_data_BC.loc[df_data_BC.index.month ==
+                                       month + 1, :].index
+            df_data_BC.loc[idx_month, 'P01'] = P01_val_month[month]
+        return df_data_BC
+
+    def datamodel_DP(self, data_oben, data_unten):
+        df = pd.concat(
+            [data_unten.iloc[np.arange(0,
+                                       len(data_oben)) * 2],
+             data_oben.value], axis=1)
+        # choose the data with constraint ( > threshold , 0 < w < 1)
+        # the amount unten hier beduetet zweite.
+        df.columns = ['amount_unten', 'amount_oben']
+        df = df[df.amount_oben >= threshold]
+        # calculate P01 with parameters a and b caculated before
+        Z01 = result_log.x[0] + result_log.x[1] * np.log(df.amount_oben)
+        df['P01'] = 1 - (1 / (1 + np.exp(-Z01)))
+        return df
+
+    def makesure(self, datafr):
+        datafr[datafr.amount_oben < 0] = 0
+        return datafr
+
+    def df_RV(self, datafr):
+        datafr['RV'] = np.random.rand(len(datafr), 1)
+        return datafr
+
+    def df_RV2(self, datafr):
+        datafr['RV2'] = np.random.rand(len(datafr), 1)
+        return datafr
+
+    def assign_W01_P01(self, datafr):
+        # these values will be either 0 or 1
+        idx_p01 = np.where(datafr.RV <= datafr.P01)[0]
+        df_BCmodel_01 = datafr.iloc[idx_p01, :]
+        idx_w0 = df_BCmodel_01.iloc[
+            np.where(df_BCmodel_01.RV2 <= 0.5)[0], :].index
+        idx_w1 = df_BCmodel_01.iloc[
+            np.where(df_BCmodel_01.RV2 > 0.5)[0], :].index
+
+        datafr.loc[idx_w0, 'W0'] = 0
+        datafr.loc[idx_w0, 'W1'] = 1
+
+        datafr.loc[idx_w1, 'W0'] = 1
+        datafr.loc[idx_w1, 'W1'] = 0
+        return datafr
+
+    def assign_W01_beta(self, datafr):
+
+        idx_w01 = datafr.iloc[
+            np.where(datafr.RV > datafr.P01)[0], :].index
+        datafr.loc[idx_w01, 'W0'] = np.random.beta(
+            result_beta.x[0], result_beta.x[1],
+            size=len(idx_w01))
+
+        datafr.loc[idx_w01, 'W1'] = (
+            1 - datafr.loc[idx_w01, 'W0'])
+        return datafr
+
+    def R_simulation(self, datafr):
+
+        datafr = self.assign_W01_P01(datafr)
+        datafr = self.assign_W01_beta(datafr)
+        df_final = pd.DataFrame(index=datafr.index)
+        df_final['R1'] = datafr.loc[
+            :, 'amount_oben'] * datafr.loc[:, 'W0']
+        df_final['R2'] = datafr.loc[
+            :, 'amount_oben'] * datafr.loc[:, 'W1']
+        return df_final
+
+
+#=======================================================================
+#
+#=======================================================================
 if __name__ == '__main__':
     print('#### Started on %s ####\n' % time.asctime())
     START = timeit.default_timer()
 
     main_dir = os.path.join(
-        r'X:\staff\elhachem\ClimXtreme\04_analysis\08_cascade_model')
+        r'X:\staff\elhachem\GitHub\pymdrc\test_data_results')
     os.chdir(main_dir)
 
-    StationPath = os.path.join(main_dir, r'P00003_1min_data.csv')
+    StationPath = os.path.join(main_dir, r'P00003_60min_data_1995_2011.csv')
     assert os.path.exists(StationPath)
 
     # read df
@@ -236,12 +615,103 @@ if __name__ == '__main__':
     StationData_row.index = pd.to_datetime(
         StationData_row.index, format="%Y-%m-%d %H:%M:%S")
 
-    main_class = CascadeModel(df=StationData_row)
+    cascade_levels = 5
 
-    input_agg = main_class.find_init_temp_agg(StationData_row)
-    resample_df = main_class.resampleDf(StationData_row,
-                                        '60min')
+    main_class = CascadeModel(
+        df=StationData_row, cascade_levels=cascade_levels)
 
+    ll = main_class.create_agg_levels()
+
+    trace_rainfall = 0.3
+
+    initial_beta_vls = [2.2, 2.2]  # if symmetric beta
+    beta_bounds = [(2, 5.), (2, 5.)]
+
+    # create dataframes for all aggregation frequencies
+    cons = {'type': 'eq',
+            'fun': lambda x: np.array(x[0] - x[1])}
+
+    # change this to improve fit of logRegression (2params a, b)
+
+    increment = 0.02
+    min_number = 30
+
+    a_b_intial_vls = [-1., 1.9]
+    a_b_params_bounds = [(None, None), (1.8, None)]
+
+    for _agg in ll:
+        upper_level_agg = str(_agg) + 'Min'
+        lower_level_agg = str(int(_agg / 2)) + 'Min'
+        # 60-120-240-480-720-1440
+        df_upper_level = main_class.resampleDf(upper_level_agg)
+        df_lower_level = main_class.resampleDf(lower_level_agg)
+
+        main_class.plot_station_data(df_to_plot=df_upper_level,
+                                     temp_agg=upper_level_agg)
+
+        w1, w2 = main_class.calc_weights_level(
+            df_oben=df_upper_level,
+            df_unten=df_lower_level,
+            pcp_thr=trace_rainfall)
+
+        P01_level = main_class.valueP01(weights_level=w1)
+
+        P01_level_monthly = main_class.valueP01_monthly(weights_level=w1)
+
+        main_class.plot_P01_monthly(P01_month=P01_level_monthly,
+                                    agg_upper_level=upper_level_agg,
+                                    agg_lower_level=lower_level_agg)
+        main_class.W_innerhalb(weights_level=w1,
+                               df_oben=df_upper_level,
+                               pcp_thr=trace_rainfall,
+                               agg_upper_level=upper_level_agg,
+                               agg_lower_level=lower_level_agg)
+
+        # b1, b2 = main_class.fitBetaWeights(weights_level=w1)
+
+        # main_class.plot_fitbeta(w1)
+        bf = betafit()
+        df_beta = bf.dfcreate(w1)
+        #df_beta = bf.dfcreate(W2_2er, S_30min ,S_15min)
+
+        result_beta = minimize(bf.obj_logbetafun,
+                               initial_beta_vls,
+                               constraints=cons,
+                               method='SLSQP',
+                               options={'disp': True})
+
+        bf.plot_fitbeta(df_beta,
+                        agg_upper_level=upper_level_agg,
+                        agg_lower_level=lower_level_agg)
+
+        df = main_class.create_df_w_pcp(w1, df_oben=df_upper_level,
+                                        df_unten=df_lower_level)
+        df = main_class.makesure(df)
+
+        result_log = minimize(
+            main_class.obj_logfun,
+            [2, 2],
+            method='SLSQP', options={'disp': True})
+
+        df_incr_p01 = main_class.create_intervals_p01(df)
+        P01_class = main_class.interval_P01(df)
+        meanR = main_class.meanR_class(df)
+
+        main_class.plot_log_reg_P01(
+            df,
+            agg_upper_level=upper_level_agg,
+            agg_lower_level=lower_level_agg)
+
+        cas = simulatemodeing()
+        df_BCmodel = cas.datamodel_BC(w1, df_upper_level,
+                                      df_lower_level,
+                                      threshold=trace_rainfall)
+        df_BCmodel = cas.makesure(df_BCmodel)
+        df_BCmodel = cas.model_BC_P01(df_BCmodel)
+        df_BCmodel = cas.df_RV(df_BCmodel)
+        df_BCmodel = cas.df_RV2(df_BCmodel)
+        df_BCmodel = cas.R_simulation(df_BCmodel)
+        break
     STOP = timeit.default_timer()
     print(('\n#### Done with everything on %s.\nTotal run time was'
            ' about %0.4f seconds ####' % (time.asctime(), STOP - START)))

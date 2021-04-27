@@ -139,31 +139,31 @@ S_15min = grouppe(StationData_row, '15T')
 
 #
 
-
-def fulfill_er(df_oben, df_unten, timestep_unten):
-
-    if 2 * len(df_oben) - len(df_unten) == 1:
-        df = df_unten.copy()
-        df.loc[df.index[0] -
-               pd.offsets.Minute(timestep_unten), 'value'] = df_oben.value[0] - df.value[0]
-        df = df.sort_index()
-
-    elif 2 * len(df_oben) - len(df_unten) == 3:
-        df = df_unten.copy()
-        # third
-        df.loc[df.index[0] -
-               pd.offsets.Minute(timestep_unten), 'value'] = df_oben.value[1] - df.value[0]
-        df = df.sort_index()
-
-    #second and one
-    for i in range(0, 2):
-        df.loc[df.index[0] -
-               pd.offsets.Minute(timestep_unten), 'value'] = df_oben.value[0] / 2
-        df = df.sort_index()
-    else:
-        pass
-
-    return df
+#
+# def fulfill_er(df_oben, df_unten, timestep_unten):
+#
+# if 2 * len(df_oben) - len(df_unten) == 1:
+# df = df_unten.copy()
+# df.loc[df.index[0] -
+# pd.offsets.Minute(timestep_unten), 'value'] = df_oben.value[0] - df.value[0]
+# df = df.sort_index()
+#
+# elif 2 * len(df_oben) - len(df_unten) == 3:
+# df = df_unten.copy()
+# # third
+# df.loc[df.index[0] -
+# pd.offsets.Minute(timestep_unten), 'value'] = df_oben.value[1] - df.value[0]
+# df = df.sort_index()
+#
+# #second and one
+# for i in range(0, 2):
+# df.loc[df.index[0] -
+# pd.offsets.Minute(timestep_unten), 'value'] = df_oben.value[0] / 2
+# df = df.sort_index()
+# else:
+# pass
+#
+# return df
 
 
 #
@@ -487,8 +487,9 @@ bf.plot_fitbeta(df_beta)
 # %%
 StationData = pd.DataFrame()
 # hourly
-StationData = StationData_row.reindex(pd.date_range(StationData_row.index.floor('D').min(),
-                                                    StationData_row.index.ceil('D').max(), freq='H'))[:-1]
+StationData = StationData_row.reindex(
+    pd.date_range(StationData_row.index.floor('D').min(),
+                  StationData_row.index.ceil('D').max(), freq='H'))[:-1]
 # daily
 #StationData = StationData.resample('D', label='right').sum()
 
@@ -583,9 +584,9 @@ min_number = 30
 # close to left
 intervals = np.arange(df.amount_oben.min(),
                       df.amount_oben.max(),
-                      (df.amount_oben.max() - df.amount_oben.min()
-                       ) * increment
-                      )
+                      (df.amount_oben.max() -
+                       df.amount_oben.min()
+                       ) * increment)
 
 df['categories'] = pd.cut(df.amount_oben  # .amount_oben.sort_values(ascending=True)
                           , bins=intervals, labels=False)
@@ -652,16 +653,6 @@ class simulatemodeing:
     # threshold = 0.3
     # building and select data
 
-    # def datamodel_BC(self, w_layer, data_oben, data_unten):
-        # df = pd.concat([w_layer, data_unten.iloc[np.arange(0,
-                                                           # len(data_oben)) * 2], data_oben.value], axis=1)
-        # # choose the data with constraint ( > threshold , 0 < w < 1)
-        # # the amount unten hier beduetet zweite.
-        # df.columns = ['P01', 'amount_unten', 'amount_oben']
-        # df = df[df.amount_oben >= threshold]
-        # df = df[(df.P01 <= 1) & (df.P01 >= 0)]
-        # return df
-
     def valueP01_monthly(self, w_df):
 
         month_list = []
@@ -719,6 +710,42 @@ class simulatemodeing:
         datafr['RV2'] = np.random.rand(len(datafr), 1)
         return datafr
 
+    def assign_W01_P01(self, datafr):
+        # these values will be either 0 or 1
+        idx_p01 = np.where(datafr.RV <= datafr.P01)[0]
+        df_BCmodel_01 = datafr.iloc[idx_p01, :]
+        idx_w0 = df_BCmodel_01.iloc[
+            np.where(df_BCmodel_01.RV2 <= 0.5)[0], :].index
+        idx_w1 = df_BCmodel_01.iloc[
+            np.where(df_BCmodel_01.RV2 > 0.5)[0], :].index
+
+        datafr.loc[idx_w0, 'W0'] = 0
+        datafr.loc[idx_w0, 'W1'] = 1
+
+        datafr.loc[idx_w1, 'W0'] = 1
+        datafr.loc[idx_w1, 'W1'] = 0
+        return datafr
+
+    def assign_W01_beta(self, datafr):
+
+        idx_w01 = datafr.iloc[
+            np.where(datafr.RV > datafr.P01)[0], :].index
+        datafr.loc[idx_w01, 'W0'] = np.random.beta(
+            result_beta.x[0], result_beta.x[1],
+            size=len(idx_w01))
+
+        datafr.loc[idx_w01, 'W1'] = (
+            1 - datafr.loc[idx_w01, 'W0'])
+        return datafr
+
+    def R_simulation(self, datafr, df_oben):
+        df_final = df_oben.copy(deep=True)
+        df_final['R1'] = datafr.loc[
+            :, 'amount_oben'] * datafr.loc[:, 'W0']
+        df_final['R2'] = datafr.loc[
+            :, 'amount_oben'] * datafr.loc[:, 'W1']
+        return df_final
+
     def W_simulation(self, datafr):
         # the R_simulation there is R2
         datafr['W2_simu'] = datafr.RV.copy()
@@ -743,10 +770,10 @@ class simulatemodeing:
 
         return datafr
 
-    def R_simulation(self, datafr):
-        datafr['R2'] = datafr.W2_simu * datafr.amount_oben
-        datafr['R1'] = (1 - datafr.W2_simu) * datafr.amount_oben
-        return datafr
+    # def R_simulation(self, datafr):
+        # datafr['R2'] = datafr.W2_simu * datafr.amount_oben
+        # datafr['R1'] = (1 - datafr.W2_simu) * datafr.amount_oben
+        # return datafr
 
   # basic model
 cas = simulatemodeing()
@@ -759,24 +786,26 @@ df_BCmodel = cas.W_simulation(df_BCmodel)
 df_BCmodel = cas.R_simulation(df_BCmodel)
 
 # these values will be either 0 or 1
-idx_p01 = np.where(df_BCmodel.RV <= df_BCmodel.P01)[0]
-df_BCmodel_01 = df_BCmodel.iloc[idx_p01, :]
-idx_w0 = df_BCmodel_01.iloc[np.where(df_BCmodel_01.RV2 <= 0.5)[0], :].index
-idx_w1 = df_BCmodel_01.iloc[np.where(df_BCmodel_01.RV2 > 0.5)[0], :].index
+# idx_p01 = np.where(df_BCmodel.RV <= df_BCmodel.P01)[0]
+# df_BCmodel_01 = df_BCmodel.iloc[idx_p01, :]
+# idx_w0 = df_BCmodel_01.iloc[
+# np.where(df_BCmodel_01.RV2 <= 0.5)[0], :].index
+# idx_w1 = df_BCmodel_01.iloc[
+# np.where(df_BCmodel_01.RV2 > 0.5)[0], :].index
+#
+# df_BCmodel.loc[idx_w0, 'W0'] = 0
+# df_BCmodel.loc[idx_w0, 'W1'] = 1
+#
+# df_BCmodel.loc[idx_w1, 'W0'] = 1
+# df_BCmodel.loc[idx_w1, 'W1'] = 0
 
-df_BCmodel.loc[idx_w0, 'W0'] = 0
-df_BCmodel.loc[idx_w0, 'W1'] = 1
-
-df_BCmodel.loc[idx_w1, 'W0'] = 1
-df_BCmodel.loc[idx_w1, 'W1'] = 0
-
-
-idx_w01 = df_BCmodel.iloc[np.where(df_BCmodel.RV > df_BCmodel.P01)[0], :].index
-df_BCmodel.loc[idx_w01, 'W0'] = np.random.beta(
-    result_beta.x[0], result_beta.x[1],
-    size=len(idx_w01))
-
-df_BCmodel.loc[idx_w01, 'W1'] = 1 - df_BCmodel.loc[idx_w01, 'W0']
+#
+# idx_w01 = df_BCmodel.iloc[np.where(df_BCmodel.RV > df_BCmodel.P01)[0], :].index
+# df_BCmodel.loc[idx_w01, 'W0'] = np.random.beta(
+# result_beta.x[0], result_beta.x[1],
+# size=len(idx_w01))
+#
+# df_BCmodel.loc[idx_w01, 'W1'] = 1 - df_BCmodel.loc[idx_w01, 'W0']
 
 df_BCmodel['R1'] = df_BCmodel.loc[
     :, 'amount_oben'] * df_BCmodel.loc[:, 'W0']
